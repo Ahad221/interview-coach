@@ -11,3 +11,4 @@ sounddevice>=0.4.6
 soundfile>=0.12.1
 numpy>=1.26.0
 plotly>=5.18.0
+groq>=0.9.0
