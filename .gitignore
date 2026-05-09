@@ -1,0 +1,30 @@
+# Environment & secrets
+.env
+*.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+env/
+*.egg-info/
+dist/
+build/
+
+# Data & vector stores
+data/*.json
+data/*.pkl
+data/*.faiss
+data/*.index
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Streamlit
+.streamlit/secrets.toml
+
+# Logs
+*.log

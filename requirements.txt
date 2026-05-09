@@ -1,0 +1,12 @@
+streamlit>=1.32.0
+openai>=1.30.0
+langchain>=0.2.0
+langchain-openai>=0.1.0
+langchain-community>=0.2.0
+faiss-cpu>=1.8.0
+sentence-transformers>=3.0.0
+python-dotenv>=1.0.0
+openai-whisper>=20231117
+sounddevice>=0.4.6
+soundfile>=0.12.1
+numpy>=1.26.0
