@@ -14,10 +14,7 @@ dist/
 build/
 
 # Data & vector stores
-data/*.json
-data/*.pkl
-data/*.faiss
-data/*.index
+data/
 
 # OS
 .DS_Store
