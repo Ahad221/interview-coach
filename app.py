@@ -1,13 +1,31 @@
+import os
+import html
+import tempfile
+
 import streamlit as st
 import plotly.graph_objects as go
 from dotenv import load_dotenv
 from utils.rag_utils import embed_jd, retrieve_context
-from utils.whisper_utils import record_audio, transcribe, count_filler_words
+from utils.whisper_utils import transcribe
 from agents.question_agent import generate_question
 from agents.evaluator_agent import evaluate_answer
 from agents.memory_agent import MemoryAgent
 
 load_dotenv()
+
+# Set PERSIST_MEMORY=true in .env for local use. Leave unset on the public demo
+# so every visitor gets their own session-only progress.
+PERSIST_MEMORY = os.getenv("PERSIST_MEMORY", "false").lower() == "true"
+
+
+def new_memory():
+    return MemoryAgent(persist=PERSIST_MEMORY)
+
+
+def esc(value) -> str:
+    """Escape LLM/user text before injecting into HTML."""
+    return html.escape(str(value))
+
 
 st.set_page_config(
     page_title="InterviewAI",
@@ -511,9 +529,12 @@ div[data-testid="stAlert"] {
 """, unsafe_allow_html=True)
 
 # ── Session State ─────────────────────────────────────────────
-for key, val in [("memory", None), ("db", None), ("question", None), ("answer", ""), ("last_result", None)]:
+if "memory" not in st.session_state:
+    st.session_state.memory = new_memory()
+for key, val in [("db", None), ("question", None), ("answer", ""),
+                 ("last_result", None), ("voice_text", "")]:
     if key not in st.session_state:
-        st.session_state[key] = MemoryAgent() if key == "memory" else val
+        st.session_state[key] = val
 
 memory     = st.session_state.memory
 difficulty = memory.get_difficulty()
@@ -549,7 +570,7 @@ with st.sidebar:
             </div>
         """, unsafe_allow_html=True)
         st.markdown(
-            "".join([f"<span class='weak-tag'>{w}</span>" for w in memory.get_weak_areas()]),
+            "".join([f"<span class='weak-tag'>{esc(w)}</span>" for w in memory.get_weak_areas()]),
             unsafe_allow_html=True
         )
 
@@ -571,10 +592,10 @@ with st.sidebar:
             fillcolor='rgba(124,58,237,0.07)'
         ))
         fig_s.update_layout(
-            height=155, margin=dict(l=0,r=0,t=8,b=0),
+            height=155, margin=dict(l=0, r=0, t=8, b=0),
             paper_bgcolor='rgba(0,0,0,0)',
             plot_bgcolor='rgba(0,0,0,0)',
-            yaxis=dict(range=[0,10], gridcolor='#f0ecff',
+            yaxis=dict(range=[0, 10], gridcolor='#f0ecff',
                        color='#a09cc0', tickfont=dict(size=9)),
             xaxis=dict(gridcolor='#f0ecff', color='#a09cc0',
                        tickfont=dict(size=9))
@@ -584,8 +605,8 @@ with st.sidebar:
     st.markdown("<div style='margin-top:1.25rem;'>", unsafe_allow_html=True)
     if st.button("Reset All Progress", use_container_width=True):
         st.session_state.memory.reset()
-        st.session_state.memory   = MemoryAgent()
-        st.session_state.question = None
+        st.session_state.memory      = new_memory()
+        st.session_state.question    = None
         st.session_state.last_result = None
         st.rerun()
 
@@ -621,9 +642,12 @@ with col_role:
     st.markdown("<div style='height:0.4rem'></div>", unsafe_allow_html=True)
     if st.button("Load Job Description", use_container_width=True):
         if jd_text:
-            with st.spinner("Reading and embedding job description..."):
-                st.session_state.db = embed_jd(jd_text)
-            st.success("Job description embedded — you're ready to generate questions.")
+            try:
+                with st.spinner("Reading and embedding job description..."):
+                    st.session_state.db = embed_jd(jd_text)
+                st.success("Job description embedded — you're ready to generate questions.")
+            except Exception as e:
+                st.error(f"Couldn't process the job description. ({type(e).__name__}: {e})")
         else:
             st.warning("Paste a job description before loading.")
 
@@ -646,14 +670,17 @@ if st.button("Generate Question"):
     if st.session_state.db is None:
         st.warning("Load a job description first — the AI needs it to generate relevant questions.")
     else:
-        with st.spinner("Crafting a targeted question for you..."):
-            context    = retrieve_context(role, st.session_state.db)
-            weak_areas = memory.get_weak_areas()
-            q = generate_question(context, role, weak_areas, difficulty)
-            st.session_state.question = q
+        try:
+            with st.spinner("Crafting a targeted question for you..."):
+                context    = retrieve_context(role, st.session_state.db)
+                weak_areas = memory.get_weak_areas()
+                q = generate_question(context, role, weak_areas, difficulty)
+                st.session_state.question = q
+        except Exception as e:
+            st.error(f"Couldn't generate a question right now. Please try again. ({type(e).__name__})")
 
 if st.session_state.question:
-    st.markdown(f"<div class='question-box'>{st.session_state.question}</div>",
+    st.markdown(f"<div class='question-box'>{esc(st.session_state.question)}</div>",
                 unsafe_allow_html=True)
 
 st.markdown("<hr class='divider'>", unsafe_allow_html=True)
@@ -663,7 +690,7 @@ st.markdown("<div class='step-chip'>Step 03</div>", unsafe_allow_html=True)
 st.markdown("<div class='section-title'>Your Answer</div>", unsafe_allow_html=True)
 st.markdown("<div class='section-desc'>Strong answers follow the STAR format — describe the <em>Situation</em>, your <em>Task</em>, the <em>Action</em> you took, and the measurable <em>Result</em>. Be specific with numbers.</div>", unsafe_allow_html=True)
 
-mode = st.radio("Input method", ["Type my answer", "Record voice (10 seconds)"], horizontal=True)
+mode = st.radio("Input method", ["Type my answer", "Record voice"], horizontal=True)
 
 if mode == "Type my answer":
     st.session_state.answer = st.text_area(
@@ -672,16 +699,30 @@ if mode == "Type my answer":
         label_visibility="collapsed"
     )
 else:
-    if st.button("Start Recording"):
-        with st.spinner("Recording for 10 seconds — speak clearly and at a steady pace..."):
-            filepath = record_audio(duration=10)
-        if filepath:
-            with st.spinner("Transcribing your answer..."):
-                text = transcribe(filepath)
-            st.session_state.answer = text
-            st.success(f"Transcription complete: {text}")
-        else:
-            st.warning("Recording failed. Please check your microphone settings and try again.")
+    # st.audio_input records from the VISITOR'S browser microphone,
+    # so it works on a hosted server (unlike server-side recording).
+    st.caption("Click the mic, speak your answer, click stop, then press “Transcribe Recording”.")
+    audio = st.audio_input("Record your answer")
+
+    if audio is not None:
+        if st.button("Transcribe Recording"):
+            tmp_path = None
+            try:
+                with st.spinner("Transcribing your answer..."):
+                    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+                        tmp.write(audio.getvalue())
+                        tmp_path = tmp.name
+                    text = transcribe(tmp_path)
+                st.session_state.answer     = text
+                st.session_state.voice_text = text
+            except Exception as e:
+                st.error(f"Transcription failed. Please try again or type your answer. ({type(e).__name__})")
+            finally:
+                if tmp_path and os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+
+    if st.session_state.voice_text:
+        st.success(f"Transcription: {st.session_state.voice_text}")
 
 st.markdown("<hr class='divider'>", unsafe_allow_html=True)
 
@@ -695,12 +736,17 @@ if st.button("Evaluate My Answer"):
         st.warning("Generate a question first before submitting an answer.")
     elif not st.session_state.answer:
         st.warning("Write or record your answer before requesting an evaluation.")
+    elif st.session_state.db is None:
+        st.warning("Load a job description first.")
     else:
-        with st.spinner("Evaluating your response — this takes a moment..."):
-            context = retrieve_context(st.session_state.question, st.session_state.db)
-            result  = evaluate_answer(st.session_state.question, st.session_state.answer, context)
-            memory.update(result)
-            st.session_state.last_result = result
+        try:
+            with st.spinner("Evaluating your response — this takes a moment..."):
+                context = retrieve_context(st.session_state.question, st.session_state.db)
+                result  = evaluate_answer(st.session_state.question, st.session_state.answer, context)
+                memory.update(result)
+                st.session_state.last_result = result
+        except Exception as e:
+            st.error(f"Evaluation failed. Please try again. ({type(e).__name__})")
 
 if st.session_state.last_result:
     result = st.session_state.last_result
@@ -738,22 +784,22 @@ if st.session_state.last_result:
         <div class='star-card'>
             <div class='star-letter'>S</div>
             <div class='star-label'>Situation</div>
-            <div class='star-value'>{star.get('situation',0)}<span>/10</span></div>
+            <div class='star-value'>{star.get('situation', 0)}<span>/10</span></div>
         </div>
         <div class='star-card'>
             <div class='star-letter'>T</div>
             <div class='star-label'>Task</div>
-            <div class='star-value'>{star.get('task',0)}<span>/10</span></div>
+            <div class='star-value'>{star.get('task', 0)}<span>/10</span></div>
         </div>
         <div class='star-card'>
             <div class='star-letter'>A</div>
             <div class='star-label'>Action</div>
-            <div class='star-value'>{star.get('action',0)}<span>/10</span></div>
+            <div class='star-value'>{star.get('action', 0)}<span>/10</span></div>
         </div>
         <div class='star-card'>
             <div class='star-letter'>R</div>
             <div class='star-label'>Result</div>
-            <div class='star-value'>{star.get('result',0)}<span>/10</span></div>
+            <div class='star-value'>{star.get('result', 0)}<span>/10</span></div>
         </div>
     </div>
     """, unsafe_allow_html=True)
@@ -766,7 +812,7 @@ if st.session_state.last_result:
     </div>
     """, unsafe_allow_html=True)
     cats = ["Communication", "Problem Solving", "Leadership", "Teamwork", "Adaptability"]
-    vals = [soft.get(k, 0) for k in ["communication","problem_solving","leadership","teamwork","adaptability"]]
+    vals = [soft.get(k, 0) for k in ["communication", "problem_solving", "leadership", "teamwork", "adaptability"]]
     fig = go.Figure(data=go.Scatterpolar(
         r=vals + vals[:1],
         theta=cats + [cats[0]],
@@ -779,7 +825,7 @@ if st.session_state.last_result:
     fig.update_layout(
         polar=dict(
             bgcolor='rgba(0,0,0,0)',
-            radialaxis=dict(visible=True, range=[0,10],
+            radialaxis=dict(visible=True, range=[0, 10],
                             gridcolor='#ebe8ff', color='#a09cc0',
                             tickfont=dict(size=9)),
             angularaxis=dict(gridcolor='#ebe8ff', color='#3a3a5c',
@@ -804,20 +850,20 @@ if st.session_state.last_result:
     with col_s:
         st.markdown("<div class='fb-section-title'><div class='fb-icon fb-icon-green'>✓</div> What you did well</div>", unsafe_allow_html=True)
         for s in result.get("strengths", []):
-            st.markdown(f"<div class='fb-row'><div class='dot-green'></div><div>{s}</div></div>", unsafe_allow_html=True)
+            st.markdown(f"<div class='fb-row'><div class='dot-green'></div><div>{esc(s)}</div></div>", unsafe_allow_html=True)
     with col_w:
         st.markdown("<div class='fb-section-title'><div class='fb-icon fb-icon-red'>!</div> Where to improve</div>", unsafe_allow_html=True)
         for w in result.get("weaknesses", []):
-            st.markdown(f"<div class='fb-row'><div class='dot-red'></div><div>{w}</div></div>", unsafe_allow_html=True)
+            st.markdown(f"<div class='fb-row'><div class='dot-red'></div><div>{esc(w)}</div></div>", unsafe_allow_html=True)
 
     # Improved answer
     st.markdown("<div class='improved-label'>✦ How a stronger answer would sound</div>", unsafe_allow_html=True)
-    st.markdown(f"<div class='improved-box'>{result.get('improved_answer','')}</div>", unsafe_allow_html=True)
+    st.markdown(f"<div class='improved-box'>{esc(result.get('improved_answer', ''))}</div>", unsafe_allow_html=True)
 
     if result.get("filler_word_tip"):
         st.markdown(f"""
         <div class='tip-box'>
-            <strong>Communication note —</strong> {result.get('filler_word_tip')}
+            <strong>Communication note —</strong> {esc(result.get('filler_word_tip'))}
         </div>
         """, unsafe_allow_html=True)
 

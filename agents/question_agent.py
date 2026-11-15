@@ -1,30 +1,51 @@
 import os
-from groq import Groq
+from groq import Groq, BadRequestError
 from dotenv import load_dotenv
 
 load_dotenv()
+
 client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")
 
-def generate_question(context: str, role: str, weak_areas: list, difficulty: str = "medium") -> str:
-    weak_str = ", ".join(weak_areas) if weak_areas else "none identified yet"
-    
-    difficulty_instruction = {
-        "easy": "Ask a simple, straightforward question suitable for a junior candidate.",
-        "medium": "Ask a moderately challenging question requiring specific examples.",
-        "hard": "Ask a complex, multi-part question requiring deep technical knowledge and leadership examples."
-    }.get(difficulty, "medium")
 
+def generate_question(context, role, weak_areas, difficulty):
     prompt = f"""
-You are an expert technical interviewer for a {role} position.
-Job context: {context}
-Candidate's weak areas to target: {weak_str}
-Difficulty level: {difficulty.upper()} — {difficulty_instruction}
+You are an expert technical interviewer.
 
-Generate ONE targeted interview question based on the weak areas and difficulty.
-Be concise. Return only the question, nothing else.
+Generate ONE interview question based on:
+
+Candidate Context: {context}
+Job Role: {role}
+Weak Areas: {weak_areas}
+Difficulty: {difficulty}
+
+Rules:
+- Return only the question text, nothing else.
+- Make it relevant, clear and professional.
 """
-    res = client.chat.completions.create(
-        model="llama-3.3-70b-versatile",
-        messages=[{"role": "user", "content": prompt}]
-    )
-    return res.choices[0].message.content.strip()
+
+    messages = [{"role": "user", "content": prompt}]
+
+    # gpt-oss is a reasoning model: thinking tokens count toward max_tokens,
+    # so keep the limit generous and the reasoning effort low.
+    try:
+        res = client.chat.completions.create(
+            model=MODEL,
+            messages=messages,
+            temperature=0.7,
+            max_tokens=2000,
+            reasoning_effort="low",
+        )
+    except BadRequestError:
+        # Fallback if the chosen model doesn't support reasoning_effort
+        res = client.chat.completions.create(
+            model=MODEL,
+            messages=messages,
+            temperature=0.7,
+            max_tokens=2000,
+        )
+
+    text = (res.choices[0].message.content or "").strip()
+    if not text:
+        raise ValueError("Model returned an empty question")
+    return text

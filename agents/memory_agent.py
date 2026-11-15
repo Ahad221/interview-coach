@@ -1,32 +1,51 @@
 import json
 import os
 
+
 class MemoryAgent:
-    def __init__(self, save_path="data/memory.json"):
+    """
+    Tracks scores, weak areas and adaptive difficulty.
+
+    persist=False (default): memory lives only in this visitor's session.
+        Use this for the public demo so visitors don't share/overwrite data.
+    persist=True: memory is saved to data/memory.json (good for local use).
+    """
+
+    def __init__(self, save_path="data/memory.json", persist=False):
         self.save_path = save_path
+        self.persist = persist
         self.weak_areas = []
         self.history = []
         self.session_count = 0
-        self._load()
+        if self.persist:
+            self._load()
 
     def _load(self):
         """Load memory from disk if it exists"""
         if os.path.exists(self.save_path):
-            with open(self.save_path, "r") as f:
-                data = json.load(f)
+            try:
+                with open(self.save_path, "r") as f:
+                    data = json.load(f)
                 self.weak_areas = data.get("weak_areas", [])
                 self.history = data.get("history", [])
                 self.session_count = data.get("session_count", 0)
+            except (json.JSONDecodeError, OSError):
+                pass  # corrupted file -> start fresh
 
     def _save(self):
-        """Save memory to disk"""
-        os.makedirs("data", exist_ok=True)
-        with open(self.save_path, "w") as f:
-            json.dump({
-                "weak_areas": self.weak_areas,
-                "history": self.history,
-                "session_count": self.session_count
-            }, f, indent=2)
+        """Save memory to disk (only when persist=True)"""
+        if not self.persist:
+            return
+        try:
+            os.makedirs(os.path.dirname(self.save_path) or ".", exist_ok=True)
+            with open(self.save_path, "w") as f:
+                json.dump({
+                    "weak_areas": self.weak_areas,
+                    "history": self.history,
+                    "session_count": self.session_count
+                }, f, indent=2)
+        except OSError:
+            pass  # read-only filesystem on some hosts; don't crash the app
 
     def update(self, evaluation: dict):
         """Update memory with new evaluation"""
@@ -41,10 +60,10 @@ class MemoryAgent:
         self._save()
 
     def get_weak_areas(self) -> list:
-        """Return top 5 unique weak areas"""
+        """Return the 5 most recent unique weak areas"""
         seen = set()
         unique = []
-        for w in self.weak_areas:
+        for w in reversed(self.weak_areas):
             if w not in seen:
                 seen.add(w)
                 unique.append(w)
